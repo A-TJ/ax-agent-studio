@@ -96,6 +96,7 @@ class QueueManager:
         Parse MCP messages tool result to extract message ID, sender, and content.
 
         The MCP remote server returns messages in different formats:
+        - result.messages: Structured array of message objects (current aX Platform format)
         - result.content: Status messages like " WAIT SUCCESS: Found 1 mentions"
         - result.events: Actual message data (for some MCP implementations)
         - result.content with formatted text: Message data in text format (for others)
@@ -103,8 +104,39 @@ class QueueManager:
         Returns:
             Tuple of (message_id, sender, content) or None if no valid message
         """
+        logger.info(f"🔍 DEBUG _parse_message: Called with result type {type(result)}")
         try:
-            # Try result.events first (old format from some MCP servers)
+            # Try result.messages first (current aX Platform format)
+            logger.info(f"🔍 DEBUG _parse_message: Checking for result.messages...")
+            if hasattr(result, "messages") and result.messages:
+                logger.info(f"🔍 DEBUG _parse_message: Found result.messages with {len(result.messages)} messages")
+                # Find first message that mentions this agent
+                for i, msg in enumerate(result.messages):
+                    logger.info(f"🔍 DEBUG _parse_message: Checking message {i}: mentions_agent={msg.get('mentions_agent')}, sender={msg.get('sender_name')}")
+                    logger.info(f"🔍 DEBUG _parse_message: Message content preview: {msg.get('content', '')[:100]}")
+
+                    # Check if this message DIRECTLY mentions our agent (not just references in task descriptions)
+                    # Match @agent_name only when it appears as a direct mention (at start or after whitespace)
+                    content = msg.get("content", "")
+                    mention_pattern = rf"(?:^|[\s\n])@{re.escape(self.agent_name)}(?:[\s\n]|$)"
+                    if re.search(mention_pattern, content):
+                        msg_id = msg.get("id", "unknown")
+                        sender = msg.get("sender_name", "unknown")
+                        content = msg.get("content", "")
+
+                        # Skip self-mentions
+                        if sender == self.agent_name:
+                            logger.warning(f"⏭  SKIPPING SELF-MENTION: {sender} (agent={self.agent_name})")
+                            continue
+
+                        logger.info(f"✅ Found message via messages array: {msg_id[:8]} from {sender}")
+                        return (msg_id, sender, content)
+
+                # No valid messages found for this agent
+                logger.info(f"🔍 DEBUG _parse_message: No messages mentioning @{self.agent_name} in response (checked {len(result.messages)} messages)")
+                return None
+
+            # Try result.events (old format from some MCP servers)
             if hasattr(result, "events") and result.events:
                 event = result.events[0]
                 msg_id = event.get("id", "unknown")
@@ -280,14 +312,33 @@ class QueueManager:
                     await asyncio.sleep(1)
                     continue
 
-                # Block until message arrives (wait=true)
+                # Short-poll for messages (wait=false to avoid socket errors)
                 result = await self.session.call_tool(
-                    "messages", {"action": "check", "wait": True, "mark_read": self.mark_read}
+                    "messages", {
+                        "action": "check",
+                        "filter_agent": self.agent_name,
+                        "wait": False,
+                        "mark_read": self.mark_read
+                    }
                 )
+
+                # DEBUG: Inspect result object structure
+                logger.info(f"🔍 DEBUG: result type = {type(result)}")
+                logger.info(f"🔍 DEBUG: result attributes = {[attr for attr in dir(result) if not attr.startswith('_')]}")
+                if hasattr(result, 'messages'):
+                    logger.info(f"🔍 DEBUG: result.messages exists, length = {len(result.messages) if result.messages else 0}")
+                    if result.messages:
+                        logger.info(f"🔍 DEBUG: first message = {result.messages[0]}")
+                else:
+                    logger.info(f"🔍 DEBUG: result.messages does NOT exist")
+                if hasattr(result, 'content'):
+                    logger.info(f"🔍 DEBUG: result.content = {result.content[:200] if result.content else 'None'}")
 
                 # Parse and validate message
                 parsed = self._parse_message(result)
                 if not parsed:
+                    # No message found - sleep before next poll to avoid rate limits
+                    await asyncio.sleep(2)  # Poll every 2 seconds when idle
                     continue
 
                 msg_id, sender, content = parsed

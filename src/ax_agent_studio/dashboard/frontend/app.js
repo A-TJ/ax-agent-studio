@@ -44,7 +44,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     const monitorType = document.getElementById('monitor-type-select').value;
     if (frameworkRegistry && frameworkRegistry.frameworks[monitorType]) {
         const framework = frameworkRegistry.frameworks[monitorType];
-        document.getElementById('provider-group').style.display = framework.requires_provider ? 'block' : 'none';
+        const providerGroup = document.getElementById('provider-group');
+        const providerSelect = document.getElementById('provider-select');
+
+        // Toggle visibility and required attribute for provider dropdown
+        if (framework.requires_provider) {
+            providerGroup.style.display = 'block';
+            providerSelect.setAttribute('required', 'required');
+        } else {
+            providerGroup.style.display = 'none';
+            providerSelect.removeAttribute('required');
+        }
+
         document.getElementById('model-group').style.display = framework.requires_model ? 'block' : 'none';
         document.getElementById('system-prompt-group').style.display = framework.requires_model ? 'block' : 'none';
 
@@ -88,6 +99,7 @@ function setupEventListeners() {
 
     document.getElementById('monitor-type-select').addEventListener('change', async (e) => {
         const providerGroup = document.getElementById('provider-group');
+        const providerSelect = document.getElementById('provider-select');
         const modelGroup = document.getElementById('model-group');
         const systemPromptGroup = document.getElementById('system-prompt-group');
 
@@ -98,7 +110,14 @@ function setupEventListeners() {
             const framework = frameworkRegistry.frameworks[selectedType];
 
             // PROVIDER dropdown: only show for frameworks that support multiple providers (e.g., LangGraph)
-            providerGroup.style.display = framework.requires_provider ? 'block' : 'none';
+            // Also toggle required attribute to fix HTML5 validation on hidden fields
+            if (framework.requires_provider) {
+                providerGroup.style.display = 'block';
+                providerSelect.setAttribute('required', 'required');
+            } else {
+                providerGroup.style.display = 'none';
+                providerSelect.removeAttribute('required');
+            }
 
             // MODEL dropdown: show for all frameworks except Echo
             modelGroup.style.display = framework.requires_model ? 'block' : 'none';
@@ -116,6 +135,7 @@ function setupEventListeners() {
             // Fallback to hiding all if framework not found
             console.warn(`Framework not found in registry: ${selectedType}`);
             providerGroup.style.display = 'none';
+            providerSelect.removeAttribute('required'); // Remove required when hidden
             modelGroup.style.display = 'none';
             systemPromptGroup.style.display = 'none';
         }

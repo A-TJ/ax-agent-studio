@@ -80,6 +80,7 @@ configs/production/
 # Personal Claude Code settings
 .claude/
 .mcp.json
+CLAUDE.MD
 
 # Agent workspace (filesystem MCP server)
 agent_files/
