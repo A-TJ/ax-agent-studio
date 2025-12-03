@@ -24,6 +24,7 @@ import logging
 import re
 import time
 from collections.abc import Awaitable, Callable
+from datetime import datetime
 
 from mcp import ClientSession
 
@@ -83,6 +84,11 @@ class QueueManager:
         self.heartbeat_interval = heartbeat_interval
         self._running = False
 
+        # Error handling and retry state
+        self._poll_backoff = 5  # Current backoff time in seconds
+        self._poll_backoff_max = 60  # Max backoff time
+        self._poll_consecutive_errors = 0  # Track consecutive errors for backoff
+
         logger.info(f" QueueManager initialized for @{agent_name}")
         logger.info(f"   Storage: {self.store.db_path}")
         logger.info(f"   Mark read: {self.mark_read}")
@@ -104,17 +110,11 @@ class QueueManager:
         Returns:
             Tuple of (message_id, sender, content) or None if no valid message
         """
-        logger.info(f"🔍 DEBUG _parse_message: Called with result type {type(result)}")
         try:
             # Try result.messages first (current aX Platform format)
-            logger.info(f"🔍 DEBUG _parse_message: Checking for result.messages...")
             if hasattr(result, "messages") and result.messages:
-                logger.info(f"🔍 DEBUG _parse_message: Found result.messages with {len(result.messages)} messages")
                 # Find first message that mentions this agent
-                for i, msg in enumerate(result.messages):
-                    logger.info(f"🔍 DEBUG _parse_message: Checking message {i}: mentions_agent={msg.get('mentions_agent')}, sender={msg.get('sender_name')}")
-                    logger.info(f"🔍 DEBUG _parse_message: Message content preview: {msg.get('content', '')[:100]}")
-
+                for msg in result.messages:
                     # Check if this message DIRECTLY mentions our agent (not just references in task descriptions)
                     # Match @agent_name only when it appears as a direct mention (at start or after whitespace)
                     content = msg.get("content", "")
@@ -129,11 +129,11 @@ class QueueManager:
                             logger.warning(f"⏭  SKIPPING SELF-MENTION: {sender} (agent={self.agent_name})")
                             continue
 
-                        logger.info(f"✅ Found message via messages array: {msg_id[:8]} from {sender}")
+                        logger.info(f"✅ Found message: {msg_id[:8]} from {sender}")
                         return (msg_id, sender, content)
 
                 # No valid messages found for this agent
-                logger.info(f"🔍 DEBUG _parse_message: No messages mentioning @{self.agent_name} in response (checked {len(result.messages)} messages)")
+                logger.debug(f"No messages mentioning @{self.agent_name} in response")
                 return None
 
             # Try result.events (old format from some MCP servers)
@@ -205,6 +205,67 @@ class QueueManager:
         except Exception as e:
             logger.error(f" Error parsing message: {e}")
             return None
+
+    def _parse_error_and_get_wait_time(self, error: Exception) -> tuple[str, int]:
+        """
+        Parse error and determine appropriate wait time before retry.
+
+        Returns:
+            Tuple of (error_type, wait_seconds)
+            error_type: "rate_limit", "connection_timeout", "connection_error", "unknown"
+            wait_seconds: How long to wait before retrying
+        """
+        import json
+
+        error_str = str(error)
+
+        # Check for rate limit (HTTP 429)
+        if "HTTP 429" in error_str or "rate_limited" in error_str.lower():
+            # Try to extract retry_after from error message
+            try:
+                # Error format: {"error":"rate_limited","retry_after":27,...}
+                if "{" in error_str:
+                    json_start = error_str.find("{")
+                    json_end = error_str.rfind("}") + 1
+                    error_json = json.loads(error_str[json_start:json_end])
+                    retry_after = error_json.get("retry_after", 30)
+                    logger.warning(
+                        f"⏱️  RATE LIMIT: Server requests {retry_after}s wait (next allowed: {error_json.get('next_allowed_at', 'unknown')})"
+                    )
+                    return ("rate_limit", retry_after)
+            except Exception:
+                pass
+            # Fallback if parsing fails
+            logger.warning("⏱️  RATE LIMIT: Using default 30s wait")
+            return ("rate_limit", 30)
+
+        # Check for connection timeouts
+        if (
+            "ConnectTimeoutError" in error_str
+            or "Connection timeout" in error_str
+            or "TimeoutError" in error_str
+        ):
+            # Use exponential backoff for connection timeouts
+            wait_time = min(self._poll_backoff, self._poll_backoff_max)
+            logger.warning(f"🔌 CONNECTION TIMEOUT: Will retry in {wait_time}s (backoff: {self._poll_backoff}s)")
+            return ("connection_timeout", wait_time)
+
+        # Check for connection errors (ECONNRESET, etc.)
+        if (
+            "ECONNRESET" in error_str
+            or "ConnectionResetError" in error_str
+            or "ConnectionRefusedError" in error_str
+            or "OSError" in error_str
+        ):
+            # Use exponential backoff
+            wait_time = min(self._poll_backoff, self._poll_backoff_max)
+            logger.warning(f"🔌 CONNECTION ERROR: {error.__class__.__name__} - Will retry in {wait_time}s")
+            return ("connection_error", wait_time)
+
+        # Unknown error - use current backoff
+        wait_time = min(self._poll_backoff, self._poll_backoff_max)
+        logger.error(f"❌ UNKNOWN ERROR: {error.__class__.__name__}: {str(error)[:200]}")
+        return ("unknown", wait_time)
 
     async def _startup_sweep(self):
         """
@@ -322,23 +383,20 @@ class QueueManager:
                     }
                 )
 
-                # DEBUG: Inspect result object structure
-                logger.info(f"🔍 DEBUG: result type = {type(result)}")
-                logger.info(f"🔍 DEBUG: result attributes = {[attr for attr in dir(result) if not attr.startswith('_')]}")
-                if hasattr(result, 'messages'):
-                    logger.info(f"🔍 DEBUG: result.messages exists, length = {len(result.messages) if result.messages else 0}")
-                    if result.messages:
-                        logger.info(f"🔍 DEBUG: first message = {result.messages[0]}")
-                else:
-                    logger.info(f"🔍 DEBUG: result.messages does NOT exist")
-                if hasattr(result, 'content'):
-                    logger.info(f"🔍 DEBUG: result.content = {result.content[:200] if result.content else 'None'}")
-
                 # Parse and validate message
                 parsed = self._parse_message(result)
                 if not parsed:
-                    # No message found - sleep before next poll to avoid rate limits
-                    await asyncio.sleep(2)  # Poll every 2 seconds when idle
+                    # No message found - successful poll, reset backoff if needed
+                    if self._poll_consecutive_errors > 0:
+                        logger.info(
+                            f"✅ Polling recovered after {self._poll_consecutive_errors} consecutive errors"
+                        )
+                        self._poll_consecutive_errors = 0
+                        self._poll_backoff = 5  # Reset to initial value
+
+                    # Sleep before next poll to avoid rate limits
+                    logger.info(f"⏱️  [{datetime.now().strftime('%H:%M:%S')}] Polled - no new messages")
+                    await asyncio.sleep(5)  # Poll every 5 seconds when idle
                     continue
 
                 msg_id, sender, content = parsed
@@ -351,6 +409,14 @@ class QueueManager:
                 if success:
                     backlog = self.store.get_backlog_count(self.agent_name)
                     logger.info(f" Stored message {msg_id[:8]} from {sender} (backlog: {backlog})")
+
+                    # Reset error backoff on successful message processing
+                    if self._poll_consecutive_errors > 0:
+                        logger.info(
+                            f"✅ Polling recovered after {self._poll_consecutive_errors} consecutive errors"
+                        )
+                        self._poll_consecutive_errors = 0
+                        self._poll_backoff = 5  # Reset to initial value
                 else:
                     logger.warning(f"  Failed to store message {msg_id[:8]} (likely duplicate)")
 
@@ -358,8 +424,39 @@ class QueueManager:
                 logger.info(" Poller task cancelled")
                 break
             except Exception as e:
-                logger.error(f" Poller error: {e}")
-                await asyncio.sleep(5)  # Brief pause on error
+                # Parse error and determine appropriate wait time
+                error_type, wait_seconds = self._parse_error_and_get_wait_time(e)
+
+                # Track consecutive errors for backoff calculation
+                self._poll_consecutive_errors += 1
+
+                # For rate limits, use the exact wait time from server
+                if error_type == "rate_limit":
+                    logger.warning(f"💤 Waiting {wait_seconds}s before retrying (rate limit)...")
+                    await asyncio.sleep(wait_seconds)
+                    # Don't increase backoff for rate limits
+                    continue
+
+                # For connection errors, use exponential backoff
+                if error_type in ("connection_timeout", "connection_error"):
+                    logger.warning(
+                        f"💤 Waiting {wait_seconds}s before retrying (attempt {self._poll_consecutive_errors})..."
+                    )
+                    await asyncio.sleep(wait_seconds)
+
+                    # Increase backoff exponentially: 5s → 10s → 20s → 40s → 60s (max)
+                    self._poll_backoff = min(self._poll_backoff * 2, self._poll_backoff_max)
+                    logger.debug(f"📈 Next backoff will be {self._poll_backoff}s")
+                    continue
+
+                # For unknown errors, use backoff but log more details
+                logger.error(
+                    f"❌ Poller error (attempt {self._poll_consecutive_errors}): {e.__class__.__name__}"
+                )
+                logger.warning(f"💤 Waiting {wait_seconds}s before retrying...")
+                await asyncio.sleep(wait_seconds)
+                self._poll_backoff = min(self._poll_backoff * 2, self._poll_backoff_max)
+                continue
 
     async def process_queue(self):
         """
@@ -381,7 +478,7 @@ class QueueManager:
                 #  KILL SWITCH: Check if processing should be paused
                 if kill_switch_file.exists():
                     logger.warning(" KILL SWITCH ACTIVE - Processing paused")
-                    await asyncio.sleep(2)  # Check every 2 seconds
+                    await asyncio.sleep(5)  # Check every 5 seconds
                     continue
 
                 # Check if agent is paused
@@ -393,7 +490,7 @@ class QueueManager:
                         agent_status = self.store.get_agent_status(self.agent_name)
                         reason = agent_status.get("paused_reason", "Unknown")
                         logger.debug(f"⏸  Agent paused: {reason}")
-                        await asyncio.sleep(2)  # Check every 2 seconds
+                        await asyncio.sleep(5)  # Check every 5 seconds
                         continue
 
                 # Check backlog to determine processing order
