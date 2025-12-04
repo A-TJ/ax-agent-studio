@@ -1,0 +1,360 @@
+# Shared MCP Server Configurations
+#
+# This file defines reusable MCP server configurations that can be referenced
+# by multiple agents. Instead of duplicating server configs across agent files,
+# define them once here and reference by name.
+#
+# Usage in agent config:
+#   "mcpServerRefs": ["common", "github", "filesystem"]
+#
+# Or in deployment groups:
+#   mcp_servers: ["common", "cloud_tools"]
+#
+# Benefits:
+#   - DRY: Define once, use everywhere
+#   - Consistency: All agents use same server configs
+#   - Easy updates: Change server URL in one place
+#   - Environment-aware: Different configs for local/production
+
+mcp_servers:
+  # ============================================================================
+  # COMMON SERVERS - Essential tools for all agents
+  # ============================================================================
+  common:
+    name: "Common Essential Tools"
+    description: "Basic MCP servers that most agents need (aX platform access)"
+    servers:
+      ax-gcp:
+        command: "npx"
+        args:
+          - "-y"
+          - "mcp-remote@0.1.29"
+          - "https://mcp.paxai.app/mcp/agents/{agent_id}"
+          - "--transport"
+          - "http-only"
+          - "--allow-http"
+          - "--oauth-server"
+          - "https://api.paxai.app"
+        description: "aX Platform connection (production)"
+
+    tags: ["essential", "core", "production"]
+    environment: "production"
+
+  common_local:
+    name: "Common Tools (Local Development)"
+    description: "Local development version of common tools"
+    servers:
+      ax-local:
+        command: "npx"
+        args:
+          - "-y"
+          - "mcp-remote@0.1.29"
+          - "http://localhost:3000/mcp/agents/{agent_id}"
+          - "--transport"
+          - "http-only"
+          - "--allow-http"
+        description: "aX Platform connection (local)"
+
+    tags: ["essential", "core", "local", "development"]
+    environment: "local"
+
+  # ============================================================================
+  # GITHUB - Version control and collaboration
+  # ============================================================================
+  github:
+    name: "GitHub Integration"
+    description: "GitHub repository access, issues, PRs, and file operations"
+    servers:
+      github:
+        command: "npx"
+        args:
+          - "-y"
+          - "@modelcontextprotocol/server-github"
+        env:
+          GITHUB_PERSONAL_ACCESS_TOKEN: "{github_token}"  # Set via environment
+        description: "GitHub MCP server for repo operations"
+
+    required_env_vars:
+      - "GITHUB_PERSONAL_ACCESS_TOKEN"
+
+    tags: ["github", "version-control", "collaboration"]
+    environment: "any"
+
+  # ============================================================================
+  # FILESYSTEM - File system operations
+  # ============================================================================
+  filesystem:
+    name: "Filesystem Access"
+    description: "Read and write files on the local filesystem"
+    servers:
+      filesystem:
+        command: "npx"
+        args:
+          - "-y"
+          - "@modelcontextprotocol/server-filesystem"
+          - "{workspace_dir}"
+        description: "Local filesystem access within workspace"
+
+    parameters:
+      workspace_dir: "/tmp/agent_workspace"  # Override in agent config
+
+    tags: ["filesystem", "storage", "local"]
+    environment: "local"
+
+  # ============================================================================
+  # DATABASE - Database connectivity
+  # ============================================================================
+  database_postgres:
+    name: "PostgreSQL Database"
+    description: "PostgreSQL database operations via MCP"
+    servers:
+      postgres:
+        command: "npx"
+        args:
+          - "-y"
+          - "@modelcontextprotocol/server-postgres"
+          - "{database_url}"
+        env:
+          DATABASE_URL: "{database_url}"
+        description: "PostgreSQL database connection"
+
+    required_env_vars:
+      - "DATABASE_URL"
+
+    tags: ["database", "postgresql", "data"]
+    environment: "any"
+
+  database_sqlite:
+    name: "SQLite Database"
+    description: "SQLite database operations for local development"
+    servers:
+      sqlite:
+        command: "npx"
+        args:
+          - "-y"
+          - "@modelcontextprotocol/server-sqlite"
+          - "{database_path}"
+        description: "SQLite database connection"
+
+    parameters:
+      database_path: "./data/agents.db"
+
+    tags: ["database", "sqlite", "local", "development"]
+    environment: "local"
+
+  # ============================================================================
+  # WEB TOOLS - Web scraping and browsing
+  # ============================================================================
+  web_tools:
+    name: "Web Browsing Tools"
+    description: "Web fetching, scraping, and browser automation"
+    servers:
+      fetch:
+        command: "npx"
+        args:
+          - "-y"
+          - "@modelcontextprotocol/server-fetch"
+        description: "HTTP fetch and web scraping"
+
+      puppeteer:
+        command: "npx"
+        args:
+          - "-y"
+          - "@modelcontextprotocol/server-puppeteer"
+        description: "Browser automation with Puppeteer"
+
+    tags: ["web", "scraping", "browser", "http"]
+    environment: "any"
+
+  # ============================================================================
+  # CLOUD TOOLS - Cloud provider integrations
+  # ============================================================================
+  cloud_gcp:
+    name: "Google Cloud Platform Tools"
+    description: "GCP services integration (Cloud Run, Storage, etc.)"
+    servers:
+      gcp:
+        command: "npx"
+        args:
+          - "-y"
+          - "@ax/mcp-server-gcp"
+          - "--project"
+          - "{gcp_project_id}"
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: "{gcp_credentials_path}"
+        description: "GCP services access"
+
+    required_env_vars:
+      - "GOOGLE_APPLICATION_CREDENTIALS"
+
+    parameters:
+      gcp_project_id: "your-project-id"
+
+    tags: ["cloud", "gcp", "google"]
+    environment: "production"
+
+  cloud_aws:
+    name: "Amazon Web Services Tools"
+    description: "AWS services integration (Lambda, S3, etc.)"
+    servers:
+      aws:
+        command: "npx"
+        args:
+          - "-y"
+          - "@ax/mcp-server-aws"
+          - "--region"
+          - "{aws_region}"
+        env:
+          AWS_ACCESS_KEY_ID: "{aws_access_key}"
+          AWS_SECRET_ACCESS_KEY: "{aws_secret_key}"
+        description: "AWS services access"
+
+    required_env_vars:
+      - "AWS_ACCESS_KEY_ID"
+      - "AWS_SECRET_ACCESS_KEY"
+
+    parameters:
+      aws_region: "us-east-1"
+
+    tags: ["cloud", "aws", "amazon"]
+    environment: "production"
+
+  # ============================================================================
+  # DOCKER - Container management
+  # ============================================================================
+  docker:
+    name: "Docker Container Management"
+    description: "Docker operations - build, run, manage containers"
+    servers:
+      docker:
+        command: "npx"
+        args:
+          - "-y"
+          - "@ax/mcp-server-docker"
+        description: "Docker container operations"
+
+    tags: ["docker", "containers", "devops"]
+    environment: "local"
+
+  # ============================================================================
+  # DEVELOPMENT TOOLS - Code quality and testing
+  # ============================================================================
+  dev_tools:
+    name: "Development Quality Tools"
+    description: "Linting, testing, and code quality tools"
+    servers:
+      eslint:
+        command: "npx"
+        args:
+          - "-y"
+          - "@ax/mcp-server-eslint"
+        description: "ESLint for JavaScript/TypeScript linting"
+
+      pytest:
+        command: "npx"
+        args:
+          - "-y"
+          - "@ax/mcp-server-pytest"
+        description: "Pytest for Python testing"
+
+    tags: ["development", "testing", "quality"]
+    environment: "any"
+
+  # ============================================================================
+  # COMMUNICATION TOOLS - Messaging and notifications
+  # ============================================================================
+  communication:
+    name: "Communication and Notifications"
+    description: "Slack, email, and other communication integrations"
+    servers:
+      slack:
+        command: "npx"
+        args:
+          - "-y"
+          - "@modelcontextprotocol/server-slack"
+        env:
+          SLACK_BOT_TOKEN: "{slack_token}"
+        description: "Slack messaging integration"
+
+      email:
+        command: "npx"
+        args:
+          - "-y"
+          - "@ax/mcp-server-email"
+        env:
+          SMTP_HOST: "{smtp_host}"
+          SMTP_USER: "{smtp_user}"
+          SMTP_PASSWORD: "{smtp_password}"
+        description: "Email sending via SMTP"
+
+    required_env_vars:
+      - "SLACK_BOT_TOKEN"
+      - "SMTP_HOST"
+
+    tags: ["communication", "messaging", "notifications"]
+    environment: "production"
+
+# ============================================================================
+# SERVER GROUPS - Predefined combinations
+# ============================================================================
+server_groups:
+  # Minimal setup for basic agents
+  minimal:
+    name: "Minimal Agent Setup"
+    description: "Just aX platform connection"
+    includes: ["common"]
+
+  # Standard development agent
+  standard_dev:
+    name: "Standard Development Agent"
+    description: "Common tools + GitHub + Filesystem"
+    includes: ["common", "github", "filesystem"]
+
+  # Full-stack development agent
+  fullstack_dev:
+    name: "Full-Stack Developer"
+    description: "Development tools + database + web tools"
+    includes: ["common", "github", "filesystem", "database_sqlite", "web_tools", "dev_tools"]
+
+  # DevOps agent
+  devops:
+    name: "DevOps Engineer"
+    description: "Cloud tools + Docker + communication"
+    includes: ["common", "github", "docker", "cloud_gcp", "communication"]
+
+  # Data analysis agent
+  data_analyst:
+    name: "Data Analyst"
+    description: "Database + web tools for data collection"
+    includes: ["common", "database_postgres", "web_tools"]
+
+  # Support agent
+  support:
+    name: "Support Agent"
+    description: "Communication tools + database access"
+    includes: ["common", "database_postgres", "communication"]
+
+# ============================================================================
+# Usage Examples
+# ============================================================================
+#
+# In agent config file (configs/agents/my_agent.json):
+# {
+#   "mcpServerRefs": ["common", "github", "filesystem"],
+#   "mcpServers": {
+#     // Additional agent-specific servers can go here
+#   }
+# }
+#
+# In deployment group (configs/deployment_groups.yaml):
+# deployment_groups:
+#   my_team:
+#     mcp_servers: ["standard_dev"]  # Use server group
+#     agents:
+#       - id: "developer_1"
+#       - id: "developer_2"
+#
+# Environment variable interpolation:
+#   {agent_id} - Replaced with actual agent ID
+#   {github_token} - Replaced with GITHUB_PERSONAL_ACCESS_TOKEN env var
+#   {workspace_dir} - Replaced with agent's workspace directory

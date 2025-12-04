@@ -1,0 +1,421 @@
+# Collaboration Patterns
+#
+# This file defines opinionated collaboration workflows for specific use cases.
+# Each pattern includes agent roles, communication protocols, success criteria,
+# and example deployment configurations.
+#
+# Usage:
+#   Reference a pattern in deployment_groups.yaml:
+#   collaboration_pattern: "code_review_workflow"
+#
+# Patterns vs Delegation:
+#   - Delegation patterns: HOW tasks are routed (round-robin, priority, etc.)
+#   - Collaboration patterns: WHAT workflows agents follow (code review, support, etc.)
+
+collaboration_patterns:
+  # ============================================================================
+  # CODE REVIEW WORKFLOW
+  # ============================================================================
+  code_review_workflow:
+    name: "Code Review Workflow"
+    description: "Structured code review process with developer, reviewer, and approver roles"
+    use_cases: ["software-development", "quality-assurance", "code-quality"]
+
+    roles:
+      developer:
+        responsibilities:
+          - "Implement features according to requirements"
+          - "Write unit tests for new code"
+          - "Submit code for review with description"
+          - "Address reviewer feedback"
+        system_prompt_template: |
+          You are a software developer in a code review workflow.
+          Your role is to implement features, write tests, and submit code for review.
+          When your code receives feedback, address it promptly and professionally.
+          Tag @reviewer when code is ready for review.
+
+      reviewer:
+        responsibilities:
+          - "Review code for quality, correctness, and best practices"
+          - "Provide constructive feedback"
+          - "Request changes or approve code"
+          - "Escalate to approver when satisfied"
+        system_prompt_template: |
+          You are a code reviewer in a structured review workflow.
+          Your role is to ensure code quality, correctness, and adherence to best practices.
+          Provide specific, actionable feedback. When satisfied, tag @approver for final approval.
+
+      approver:
+        responsibilities:
+          - "Final approval of reviewed code"
+          - "Merge code to main branch"
+          - "Verify tests pass"
+        system_prompt_template: |
+          You are the final approver in a code review workflow.
+          You approve well-reviewed code and merge it to the main branch.
+          Ensure tests pass before merging.
+
+    workflow_stages:
+      - stage: "implementation"
+        actor: "developer"
+        outputs: ["code", "tests", "documentation"]
+
+      - stage: "review"
+        actor: "reviewer"
+        inputs: ["code", "tests"]
+        outputs: ["feedback", "approval_status"]
+
+      - stage: "revision"
+        actor: "developer"
+        condition: "changes_requested"
+        inputs: ["feedback"]
+        outputs: ["updated_code"]
+
+      - stage: "approval"
+        actor: "approver"
+        condition: "review_approved"
+        inputs: ["code", "review_notes"]
+        outputs: ["merge_decision"]
+
+    success_criteria:
+      - "All code reviewed by at least one reviewer"
+      - "All feedback addressed"
+      - "Tests passing"
+      - "Final approval obtained"
+
+    example_deployment:
+      delegation_pattern: "waterfall"
+      agents:
+        - id: "code_developer"
+          role: "developer"
+          model: "claude-sonnet-4-5"
+
+        - id: "code_reviewer"
+          role: "reviewer"
+          model: "claude-sonnet-4-5"
+
+        - id: "code_approver"
+          role: "approver"
+          model: "claude-haiku-4-5"
+
+    communication_protocol:
+      developer_to_reviewer: "@reviewer Code ready for review: [description]"
+      reviewer_to_developer: "@developer Changes requested: [feedback]"
+      reviewer_to_approver: "@approver Code approved, ready for merge"
+      approver_to_developer: "@developer Code merged to main"
+
+    tags: ["development", "quality", "structured"]
+
+  # ============================================================================
+  # SUPPORT ESCALATION WORKFLOW
+  # ============================================================================
+  support_escalation_workflow:
+    name: "Support Escalation Workflow"
+    description: "Tiered customer support with triage, L1, L2, and engineering escalation"
+    use_cases: ["customer-support", "technical-support", "helpdesk"]
+
+    roles:
+      triage:
+        responsibilities:
+          - "Receive and categorize incoming support requests"
+          - "Assess priority and complexity"
+          - "Route to appropriate support level"
+        system_prompt_template: |
+          You are a support triage agent.
+          Your role is to analyze incoming support requests, categorize them by type and priority,
+          and route them to the appropriate support level.
+          - Simple issues → @l1_support
+          - Complex issues → @l2_support
+          - Critical/urgent issues → @l2_support (mark as urgent)
+
+      l1_support:
+        responsibilities:
+          - "Handle common support questions"
+          - "Provide documentation and guides"
+          - "Escalate complex issues to L2"
+        system_prompt_template: |
+          You are a Level 1 support agent.
+          Your role is to handle common customer questions using the knowledge base.
+          If an issue is too complex or you cannot resolve it, escalate to @l2_support with context.
+
+      l2_support:
+        responsibilities:
+          - "Handle complex technical issues"
+          - "Troubleshoot system problems"
+          - "Escalate bugs to engineering"
+        system_prompt_template: |
+          You are a Level 2 technical support agent.
+          Your role is to handle complex technical issues, troubleshoot system problems,
+          and diagnose bugs. If you find a confirmed bug, escalate to @engineering with details.
+
+      engineering:
+        responsibilities:
+          - "Fix confirmed bugs"
+          - "Implement system improvements"
+          - "Provide root cause analysis"
+        system_prompt_template: |
+          You are an engineering agent handling escalated issues.
+          Your role is to fix confirmed bugs, implement system improvements,
+          and provide root cause analysis. Once fixed, notify @l2_support for customer communication.
+
+    workflow_stages:
+      - stage: "intake"
+        actor: "triage"
+        outputs: ["category", "priority", "routing_decision"]
+
+      - stage: "l1_resolution"
+        actor: "l1_support"
+        condition: "simple_issue"
+        outputs: ["resolution", "escalation_decision"]
+
+      - stage: "l2_resolution"
+        actor: "l2_support"
+        condition: "complex_issue OR l1_escalated"
+        outputs: ["troubleshooting_results", "escalation_decision"]
+
+      - stage: "engineering_fix"
+        actor: "engineering"
+        condition: "confirmed_bug"
+        outputs: ["bug_fix", "deployment_plan"]
+
+    escalation_criteria:
+      to_l2:
+        - "Issue not in L1 knowledge base"
+        - "Requires system access or logs"
+        - "Customer is premium tier"
+
+      to_engineering:
+        - "Confirmed software bug"
+        - "Performance issue requiring code changes"
+        - "Security vulnerability"
+
+    success_criteria:
+      - "Issue resolved within SLA"
+      - "Customer satisfaction maintained"
+      - "Proper escalation path followed"
+      - "Root cause identified for bugs"
+
+    example_deployment:
+      delegation_pattern: "escalation_ladder"
+      agents:
+        - id: "support_triage"
+          role: "triage"
+          model: "claude-haiku-4-5"
+
+        - id: "support_l1"
+          role: "l1_support"
+          model: "gpt-4o"
+
+        - id: "support_l2"
+          role: "l2_support"
+          model: "claude-sonnet-4-5"
+
+        - id: "support_engineering"
+          role: "engineering"
+          model: "claude-sonnet-4-5"
+
+    communication_protocol:
+      triage_to_l1: "@l1_support Incoming request - Category: [category], Priority: [priority]"
+      l1_to_l2: "@l2_support Escalating - Issue: [description], Attempted: [solutions]"
+      l2_to_engineering: "@engineering Bug confirmed - Details: [description], Impact: [impact]"
+      engineering_to_l2: "@l2_support Bug fixed in version [version], please inform customer"
+
+    tags: ["support", "customer-service", "escalation"]
+
+  # ============================================================================
+  # CONTENT CREATION PIPELINE
+  # ============================================================================
+  content_creation_pipeline:
+    name: "Content Creation Pipeline"
+    description: "Multi-stage content workflow with writer, editor, and publisher roles"
+    use_cases: ["content-marketing", "documentation", "publishing"]
+
+    roles:
+      writer:
+        responsibilities:
+          - "Create original content based on brief"
+          - "Research topics and gather information"
+          - "Submit drafts for editing"
+        system_prompt_template: |
+          You are a content writer.
+          Your role is to create engaging, well-researched content based on the brief.
+          Submit your drafts to @editor for review.
+
+      editor:
+        responsibilities:
+          - "Review content for quality, accuracy, and style"
+          - "Provide feedback and suggest improvements"
+          - "Approve content for publication"
+        system_prompt_template: |
+          You are a content editor.
+          Your role is to review content for quality, accuracy, grammar, and style.
+          Provide constructive feedback to @writer or approve for @publisher.
+
+      publisher:
+        responsibilities:
+          - "Format content for publication"
+          - "Publish to appropriate channels"
+          - "Monitor content performance"
+        system_prompt_template: |
+          You are a content publisher.
+          Your role is to format approved content, publish it to the right channels,
+          and monitor its performance.
+
+    workflow_stages:
+      - stage: "briefing"
+        actor: "writer"
+        inputs: ["content_brief", "target_audience", "keywords"]
+
+      - stage: "drafting"
+        actor: "writer"
+        outputs: ["draft_content"]
+
+      - stage: "editing"
+        actor: "editor"
+        inputs: ["draft_content"]
+        outputs: ["feedback", "approval_status"]
+
+      - stage: "revision"
+        actor: "writer"
+        condition: "changes_requested"
+        inputs: ["feedback"]
+        outputs: ["revised_content"]
+
+      - stage: "publishing"
+        actor: "publisher"
+        condition: "content_approved"
+        inputs: ["approved_content"]
+        outputs: ["published_url", "analytics"]
+
+    success_criteria:
+      - "Content meets editorial standards"
+      - "Published on schedule"
+      - "Target audience reached"
+      - "Performance goals met"
+
+    example_deployment:
+      delegation_pattern: "waterfall"
+      agents:
+        - id: "content_writer"
+          role: "writer"
+          model: "gpt-4o"
+
+        - id: "content_editor"
+          role: "editor"
+          model: "claude-sonnet-4-5"
+
+        - id: "content_publisher"
+          role: "publisher"
+          model: "claude-haiku-4-5"
+
+    communication_protocol:
+      writer_to_editor: "@editor Draft ready for review: [title]"
+      editor_to_writer: "@writer Feedback: [suggestions]"
+      editor_to_publisher: "@publisher Content approved: [title]"
+      publisher_to_editor: "@editor Content published: [url]"
+
+    tags: ["content", "publishing", "creative"]
+
+  # ============================================================================
+  # DATA ANALYSIS WORKFLOW
+  # ============================================================================
+  data_analysis_workflow:
+    name: "Data Analysis Workflow"
+    description: "Structured data analysis with analyst, validator, and reporter roles"
+    use_cases: ["data-science", "business-intelligence", "analytics"]
+
+    roles:
+      analyst:
+        responsibilities:
+          - "Perform data analysis"
+          - "Create visualizations"
+          - "Generate insights"
+        system_prompt_template: |
+          You are a data analyst.
+          Your role is to analyze data, create visualizations, and generate insights.
+          Submit your analysis to @validator for review.
+
+      validator:
+        responsibilities:
+          - "Verify analysis methodology"
+          - "Check calculations and statistics"
+          - "Validate conclusions"
+        system_prompt_template: |
+          You are a data validation specialist.
+          Your role is to verify analysis methodology, check calculations,
+          and validate conclusions. Approve or request corrections.
+
+      reporter:
+        responsibilities:
+          - "Create executive summaries"
+          - "Present findings to stakeholders"
+          - "Generate reports"
+        system_prompt_template: |
+          You are a data reporter.
+          Your role is to create clear, actionable reports from validated analysis.
+          Present findings in a format stakeholders can understand.
+
+    workflow_stages:
+      - stage: "data_collection"
+        actor: "analyst"
+        outputs: ["clean_data", "data_summary"]
+
+      - stage: "analysis"
+        actor: "analyst"
+        inputs: ["clean_data"]
+        outputs: ["analysis_results", "visualizations"]
+
+      - stage: "validation"
+        actor: "validator"
+        inputs: ["analysis_results", "methodology"]
+        outputs: ["validation_report", "approval_status"]
+
+      - stage: "reporting"
+        actor: "reporter"
+        condition: "analysis_validated"
+        inputs: ["analysis_results", "visualizations"]
+        outputs: ["executive_report", "presentation"]
+
+    success_criteria:
+      - "Analysis methodology is sound"
+      - "Results are statistically significant"
+      - "Insights are actionable"
+      - "Reports are clear and accessible"
+
+    example_deployment:
+      delegation_pattern: "waterfall"
+      agents:
+        - id: "data_analyst"
+          role: "analyst"
+          model: "claude-sonnet-4-5"
+
+        - id: "data_validator"
+          role: "validator"
+          model: "claude-sonnet-4-5"
+
+        - id: "data_reporter"
+          role: "reporter"
+          model: "gpt-4o"
+
+    communication_protocol:
+      analyst_to_validator: "@validator Analysis complete, ready for validation"
+      validator_to_analyst: "@analyst Validation failed: [issues]"
+      validator_to_reporter: "@reporter Analysis validated, proceed with reporting"
+      reporter_to_analyst: "@analyst Report complete: [summary]"
+
+    tags: ["data", "analysis", "business-intelligence"]
+
+# ============================================================================
+# Pattern Selection Guide
+# ============================================================================
+#
+# Choose the right collaboration pattern for your team:
+#
+# code_review_workflow: Software development with quality gates
+# support_escalation_workflow: Customer support with tiered escalation
+# content_creation_pipeline: Content production with editorial review
+# data_analysis_workflow: Data science with validation checkpoints
+#
+# Combine with delegation patterns for complete orchestration:
+#   collaboration_pattern: "code_review_workflow"
+#   delegation_pattern: "waterfall"

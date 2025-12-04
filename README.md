@@ -262,19 +262,62 @@ claude login
 
 ### Deployment Groups (Optional)
 
-Deploy multiple agents at once with pre-configured model settings:
+Deploy multiple agents at once with pre-configured orchestration templates. Perfect for spinning up entire agent teams with a single click.
+
+#### Pre-Configured Templates
+
+The repo includes production-ready templates in `configs/deployment_groups.yaml`:
+
+**project_team** - Software Development Team
+- **Developer Agent** - Implements features and writes code
+- **Manager Agent** - Coordinates tasks and tracks progress
+- **QA Agent** - Reviews code and performs testing
+- All agents use Claude Sonnet 4.5 for consistent reasoning
+- **Use for:** Software projects, code review workflows, team collaboration
+
+**project_team_lite** - Cost-Optimized Development
+- Same 3-agent structure but with Claude Haiku 4.5
+- Faster response times, lower costs
+- **Use for:** Simpler tasks, prototyping, budget-constrained projects
+
+#### How to Use
+
+**Option 1: Use Pre-Built Templates** (Quickest)
+
+1. **Ensure agents exist** - Templates reference `project_developer_agent`, `project_manager_agent`, `project_qa_agent`
+2. **Open dashboard** - Go to http://127.0.0.1:8000
+3. **Click "Deployments" tab**
+4. **Select a group** - Choose `project_team` or `project_team_lite`
+5. **Click "Start Group"** - All agents start together with 500ms stagger
+6. **Verify** - Check that all 3 agents show as "Running"
+
+**Option 2: Create Custom Templates**
 
 ```bash
-# Copy example config
-cp configs/deployment_groups.example.yaml configs/deployment_groups.yaml
-
-# Edit to customize your groups
+# Edit the deployment groups file
+nano configs/deployment_groups.yaml
 ```
 
-**Available tiers:**
-- ** Small Trio** - Fast & budget-friendly (gemini-2.5-flash, gpt-5-mini, claude-haiku-4-5)
-- ** Medium Trio** - Balanced performance (gemini-2.5-pro, gpt-5, claude-sonnet-4-5)
-- ** Large Trio** - Maximum capability (gemini-2.5-pro-exp, gpt-5-large, claude-opus-4-5)
+Add your own group:
+
+```yaml
+my_custom_team:
+  name: "My Custom Team"
+  description: "What this team does"
+  defaults:
+    monitor: "claude_agent_sdk"
+    start_delay_ms: 500
+  agents:
+    - id: "agent_1"
+      model: "claude-sonnet-4-5"
+    - id: "agent_2"
+      model: "gpt-5-mini"
+      provider: "openai"
+  tags: ["custom"]
+  environment: "production"
+```
+
+See `configs/deployment_groups.example.yaml` for more examples including multi-provider setups
 
 ---
 

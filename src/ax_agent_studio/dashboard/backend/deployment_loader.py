@@ -8,7 +8,9 @@ and process manager.
 
 from __future__ import annotations
 
+import copy
 import dataclasses
+from dataclasses import field
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +24,7 @@ class DeploymentAgent:
     """Agent entry inside a deployment group."""
 
     id: str
+    role: str | None = None
     monitor: str | None = None
     provider: str | None = None
     model: str | None = None
@@ -43,6 +46,14 @@ class DeploymentGroup:
     agents: list[DeploymentAgent]
     tags: list[str]
     environment: str = "any"
+    delegation_pattern: str | None = None
+    collaboration_pattern: str | None = None
+    mcp_servers: list[str] = field(default_factory=list)
+    execution_preset: str | None = None
+    delegation_pattern_details: dict[str, Any] | None = None
+    collaboration_pattern_details: dict[str, Any] | None = None
+    mcp_server_details: list[dict[str, Any]] = field(default_factory=list)
+    execution_preset_details: dict[str, Any] | None = None
 
 
 class DeploymentLoader:
@@ -53,11 +64,17 @@ class DeploymentLoader:
         self.config_path = self.base_dir / "configs" / "deployment_groups.yaml"
         self._groups: dict[str, DeploymentGroup] = {}
         self._config_loader = ConfigLoader(base_dir)
+        self._delegation_patterns: dict[str, Any] = {}
+        self._collaboration_patterns: dict[str, Any] = {}
+        self._mcp_servers: dict[str, Any] = {}
+        self._mcp_server_groups: dict[str, Any] = {}
+        self._execution_presets: dict[str, Any] = {}
         self.reload()
 
     def reload(self) -> None:
         """Reload deployment groups from disk."""
         self._groups = {}
+        self._load_orchestration_configs()
 
         if not self.config_path.exists():
             return
@@ -86,6 +103,52 @@ class DeploymentLoader:
             except Exception as e:
                 print(f"  Skipping deployment group '{group_id}': {e}")
 
+    def _load_orchestration_configs(self) -> None:
+        """Load auxiliary orchestration configuration files."""
+        self._delegation_patterns = self._load_yaml_section(
+            "configs/delegation_patterns.yaml", "delegation_patterns"
+        )
+        self._collaboration_patterns = self._load_yaml_section(
+            "configs/collaboration_patterns.yaml", "collaboration_patterns"
+        )
+
+        mcp_data = self._load_yaml_file("configs/mcp_servers.yaml")
+        mcp_servers = mcp_data.get("mcp_servers", {})
+        server_groups = mcp_data.get("server_groups", {})
+
+        self._mcp_servers = mcp_servers if isinstance(mcp_servers, dict) else {}
+        self._mcp_server_groups = server_groups if isinstance(server_groups, dict) else {}
+
+        self._execution_presets = self._load_yaml_section(
+            "configs/execution_presets.yaml", "execution_presets"
+        )
+
+    def _load_yaml_file(self, relative_path: str) -> dict[str, Any]:
+        """Load a YAML file relative to the project root."""
+        path = self.base_dir / relative_path
+        if not path.exists():
+            return {}
+
+        try:
+            with open(path, encoding="utf-8") as handle:
+                data = yaml.safe_load(handle) or {}
+                if isinstance(data, dict):
+                    return data
+                print(f"  ⚠  {relative_path} root node must be a mapping")
+        except Exception as exc:
+            print(f"  ⚠  Failed to load {relative_path}: {exc}")
+        return {}
+
+    def _load_yaml_section(self, relative_path: str, section_key: str) -> dict[str, Any]:
+        """Load a specific mapping section from a YAML file."""
+        data = self._load_yaml_file(relative_path)
+        section = data.get(section_key, {})
+        if isinstance(section, dict):
+            return section
+        if section:
+            print(f"  ⚠  {relative_path}: '{section_key}' must be a mapping")
+        return {}
+
     def _parse_group(
         self,
         group_id: str,
@@ -101,6 +164,22 @@ class DeploymentLoader:
         defaults = group_info.get("defaults", {}) or {}
         tags = group_info.get("tags", []) or []
         environment = group_info.get("environment", "any") or "any"
+
+        delegation_pattern = self._normalize_string(group_info.get("delegation_pattern"))
+        collaboration_pattern = self._normalize_string(group_info.get("collaboration_pattern"))
+        execution_preset = self._normalize_string(group_info.get("execution_preset"))
+        mcp_servers = self._normalize_list(group_info.get("mcp_servers"))
+
+        delegation_pattern_details = self._get_mapping_entry(
+            self._delegation_patterns, delegation_pattern, "Delegation pattern"
+        )
+        collaboration_pattern_details = self._get_mapping_entry(
+            self._collaboration_patterns, collaboration_pattern, "Collaboration pattern"
+        )
+        execution_preset_details = self._get_mapping_entry(
+            self._execution_presets, execution_preset, "Execution preset"
+        )
+        mcp_server_details = self._resolve_mcp_servers(mcp_servers)
 
         if "agents" not in group_info or not isinstance(group_info["agents"], list):
             raise ValueError("Group must define an 'agents' list")
@@ -138,6 +217,7 @@ class DeploymentLoader:
                 agents.append(
                     DeploymentAgent(
                         id=agent_id,
+                        role=agent_data.get("role"),
                         monitor=agent_data.get("monitor"),
                         provider=agent_data.get("provider"),
                         model=agent_data.get("model"),
@@ -178,7 +258,72 @@ class DeploymentLoader:
             agents=agents,
             tags=tags,
             environment=environment,
+            delegation_pattern=delegation_pattern,
+            collaboration_pattern=collaboration_pattern,
+            mcp_servers=mcp_servers,
+            execution_preset=execution_preset,
+            delegation_pattern_details=delegation_pattern_details,
+            collaboration_pattern_details=collaboration_pattern_details,
+            mcp_server_details=mcp_server_details,
+            execution_preset_details=execution_preset_details,
         )
+
+    def _normalize_string(self, value: Any) -> str | None:
+        """Return a trimmed string or None."""
+        if isinstance(value, str):
+            stripped = value.strip()
+            return stripped or None
+        return None
+
+    def _normalize_list(self, value: Any) -> list[str]:
+        """Normalize a string/list value to a list of strings."""
+        if value is None:
+            return []
+        if isinstance(value, str):
+            stripped = value.strip()
+            return [stripped] if stripped else []
+        if isinstance(value, list):
+            normalized: list[str] = []
+            for item in value:
+                if isinstance(item, str):
+                    stripped = item.strip()
+                    if stripped:
+                        normalized.append(stripped)
+            return normalized
+        return []
+
+    def _get_mapping_entry(
+        self,
+        mapping: dict[str, Any],
+        key: str | None,
+        label: str,
+    ) -> dict[str, Any] | None:
+        """Fetch a mapping entry and provide a deep-copied payload with the id."""
+        if not key:
+            return None
+
+        entry = mapping.get(key)
+        if not isinstance(entry, dict):
+            print(f"  ⚠  {label} '{key}' not found in configuration")
+            return None
+
+        result = copy.deepcopy(entry)
+        result["id"] = key
+        return result
+
+    def _resolve_mcp_servers(self, references: list[str]) -> list[dict[str, Any]]:
+        """Resolve MCP server group references with metadata."""
+        resolved: list[dict[str, Any]] = []
+        for ref in references:
+            entry: Any = self._mcp_server_groups.get(ref) or self._mcp_servers.get(ref)
+            if not isinstance(entry, dict):
+                print(f"  ⚠  MCP server group '{ref}' not found")
+                continue
+
+            result = copy.deepcopy(entry)
+            result["id"] = ref
+            resolved.append(result)
+        return resolved
 
     def _agent_exists(self, agent_id: str, existing_agents: set[str] | None = None) -> bool:
         """Check if agent configuration file exists (non-throwing)."""

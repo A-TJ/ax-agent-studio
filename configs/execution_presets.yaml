@@ -1,0 +1,386 @@
+# Execution Presets
+#
+# This file defines environment-specific execution configurations for agents.
+# Each preset specifies where agents run, what resources they have, and how
+# they connect to services (MCP servers, databases, APIs).
+#
+# Usage:
+#   Reference a preset in deployment_groups.yaml:
+#   execution_preset: "gcp_cloud_run"
+#
+# Presets handle:
+#   - MCP server URLs (local vs production)
+#   - Resource limits (memory, CPU)
+#   - Network configuration
+#   - Environment variables
+#   - Scaling parameters
+
+execution_presets:
+  # ============================================================================
+  # LOCAL DEVELOPMENT
+  # ============================================================================
+  local_development:
+    name: "Local Development"
+    description: "Run agents locally on your development machine. Best for testing and debugging."
+    environment: "local"
+
+    mcp_config:
+      default_base_url: "http://localhost:3000"
+      server_refs: ["common_local"]
+
+    resources:
+      memory: "512Mi"
+      cpu: "0.5"
+      max_concurrent_agents: 10
+
+    network:
+      allow_external: true
+      proxy: null
+      timeout_seconds: 30
+
+    environment_variables:
+      AX_ENVIRONMENT: "local"
+      AX_LOG_LEVEL: "debug"
+      AX_ENABLE_TELEMETRY: "false"
+
+    workspace:
+      base_dir: "/tmp/agent_workspaces"
+      persist: false
+      cleanup_on_exit: true
+
+    tags: ["local", "development", "testing"]
+    cost_estimate: "free"
+
+  # ============================================================================
+  # DOCKER LOCAL
+  # ============================================================================
+  docker_local:
+    name: "Docker Local"
+    description: "Run agents in Docker containers locally. Better isolation than native local execution."
+    environment: "docker"
+
+    container_config:
+      image: "ax-agent-studio:latest"
+      network: "bridge"
+      restart_policy: "unless-stopped"
+
+    mcp_config:
+      default_base_url: "http://host.docker.internal:3000"
+      server_refs: ["common_local", "docker"]
+
+    resources:
+      memory: "1Gi"
+      cpu: "1.0"
+      max_concurrent_agents: 5
+
+    volumes:
+      - "./data:/app/data"
+      - "./logs:/app/logs"
+
+    network:
+      allow_external: true
+      expose_ports: []
+      timeout_seconds: 30
+
+    environment_variables:
+      AX_ENVIRONMENT: "docker"
+      AX_LOG_LEVEL: "info"
+      AX_ENABLE_TELEMETRY: "true"
+
+    workspace:
+      base_dir: "/app/workspaces"
+      persist: true
+      cleanup_on_exit: false
+
+    tags: ["docker", "local", "containerized"]
+    cost_estimate: "free"
+
+  # ============================================================================
+  # GOOGLE CLOUD PLATFORM - Cloud Run
+  # ============================================================================
+  gcp_cloud_run:
+    name: "GCP Cloud Run"
+    description: "Serverless execution on Google Cloud Run. Auto-scales based on demand."
+    environment: "gcp"
+
+    cloud_provider: "gcp"
+    service: "cloud-run"
+
+    mcp_config:
+      default_base_url: "https://mcp.paxai.app"
+      server_refs: ["common", "cloud_gcp"]
+
+    resources:
+      memory: "2Gi"
+      cpu: "2.0"
+      max_instances: 10
+      min_instances: 0
+      concurrency: 1
+
+    scaling:
+      auto_scale: true
+      scale_down_delay: "300s"
+      cpu_threshold: 70
+      requests_per_second_threshold: 10
+
+    network:
+      allow_external: true
+      vpc_connector: null
+      egress: "all"
+      timeout_seconds: 300
+
+    environment_variables:
+      AX_ENVIRONMENT: "production"
+      AX_LOG_LEVEL: "info"
+      AX_ENABLE_TELEMETRY: "true"
+      GOOGLE_CLOUD_PROJECT: "{gcp_project_id}"
+
+    security:
+      service_account: "{service_account_email}"
+      require_authentication: true
+      allowed_origins: ["https://ax-platform.com"]
+
+    workspace:
+      base_dir: "/tmp/workspaces"
+      persist: false
+      cleanup_on_exit: true
+
+    tags: ["gcp", "cloud-run", "serverless", "production"]
+    cost_estimate: "$0.00002 per request (approx)"
+
+  # ============================================================================
+  # GOOGLE CLOUD PLATFORM - Compute Engine
+  # ============================================================================
+  gcp_compute_engine:
+    name: "GCP Compute Engine"
+    description: "Run on dedicated GCP VM instances. More control but higher baseline cost."
+    environment: "gcp"
+
+    cloud_provider: "gcp"
+    service: "compute-engine"
+
+    instance_config:
+      machine_type: "n2-standard-2"
+      region: "us-central1"
+      zone: "us-central1-a"
+      disk_size_gb: 50
+
+    mcp_config:
+      default_base_url: "https://mcp.paxai.app"
+      server_refs: ["common", "cloud_gcp"]
+
+    resources:
+      memory: "8Gi"
+      cpu: "2.0"
+      max_concurrent_agents: 20
+
+    scaling:
+      auto_scale: true
+      min_instances: 1
+      max_instances: 5
+      target_cpu_utilization: 70
+
+    network:
+      allow_external: true
+      vpc_network: "default"
+      firewall_rules: ["allow-http", "allow-https"]
+      timeout_seconds: 600
+
+    environment_variables:
+      AX_ENVIRONMENT: "production"
+      AX_LOG_LEVEL: "info"
+      AX_ENABLE_TELEMETRY: "true"
+
+    security:
+      service_account: "{service_account_email}"
+      ssh_keys: []
+
+    workspace:
+      base_dir: "/var/lib/ax-agents"
+      persist: true
+      cleanup_on_exit: false
+
+    tags: ["gcp", "compute-engine", "vm", "production"]
+    cost_estimate: "$50-150/month (baseline + usage)"
+
+  # ============================================================================
+  # AWS LAMBDA
+  # ============================================================================
+  aws_lambda:
+    name: "AWS Lambda"
+    description: "Serverless execution on AWS Lambda. Pay per invocation."
+    environment: "aws"
+
+    cloud_provider: "aws"
+    service: "lambda"
+
+    lambda_config:
+      runtime: "python3.11"
+      handler: "ax_agent_studio.lambda_handler.main"
+      timeout: 300
+      memory_size: 2048
+
+    mcp_config:
+      default_base_url: "https://mcp.paxai.app"
+      server_refs: ["common", "cloud_aws"]
+
+    resources:
+      memory: "2Gi"
+      cpu: "provisioned"
+      max_concurrent_executions: 100
+
+    scaling:
+      auto_scale: true
+      reserved_concurrency: null
+      provisioned_concurrency: 0
+
+    network:
+      vpc_config:
+        subnet_ids: []
+        security_group_ids: []
+      timeout_seconds: 300
+
+    environment_variables:
+      AX_ENVIRONMENT: "production"
+      AX_LOG_LEVEL: "info"
+      AX_ENABLE_TELEMETRY: "true"
+      AWS_REGION: "{aws_region}"
+
+    security:
+      execution_role: "{lambda_execution_role_arn}"
+      layers: []
+
+    workspace:
+      base_dir: "/tmp"
+      persist: false
+      cleanup_on_exit: true
+
+    tags: ["aws", "lambda", "serverless", "production"]
+    cost_estimate: "$0.0000166 per GB-second (approx)"
+
+  # ============================================================================
+  # AWS ECS FARGATE
+  # ============================================================================
+  aws_ecs_fargate:
+    name: "AWS ECS Fargate"
+    description: "Containerized execution on AWS ECS Fargate. Long-running agents."
+    environment: "aws"
+
+    cloud_provider: "aws"
+    service: "ecs-fargate"
+
+    task_definition:
+      cpu: "2048"
+      memory: "4096"
+      network_mode: "awsvpc"
+      requires_compatibilities: ["FARGATE"]
+
+    container_config:
+      image: "{ecr_repository_uri}/ax-agent-studio:latest"
+      essential: true
+      port_mappings: []
+
+    mcp_config:
+      default_base_url: "https://mcp.paxai.app"
+      server_refs: ["common", "cloud_aws"]
+
+    resources:
+      memory: "4Gi"
+      cpu: "2.0"
+      max_concurrent_agents: 10
+
+    scaling:
+      auto_scale: true
+      min_tasks: 1
+      max_tasks: 10
+      target_cpu_utilization: 70
+
+    network:
+      vpc_config:
+        subnets: ["{subnet_id}"]
+        security_groups: ["{security_group_id}"]
+        assign_public_ip: true
+      timeout_seconds: 600
+
+    environment_variables:
+      AX_ENVIRONMENT: "production"
+      AX_LOG_LEVEL: "info"
+      AX_ENABLE_TELEMETRY: "true"
+      AWS_REGION: "{aws_region}"
+
+    security:
+      task_role_arn: "{task_role_arn}"
+      execution_role_arn: "{execution_role_arn}"
+
+    workspace:
+      base_dir: "/app/workspaces"
+      persist: true
+      cleanup_on_exit: false
+
+    tags: ["aws", "ecs", "fargate", "production"]
+    cost_estimate: "$30-100/month per task (baseline)"
+
+  # ============================================================================
+  # HYBRID - Mix of Local and Cloud
+  # ============================================================================
+  hybrid_dev_prod:
+    name: "Hybrid Development/Production"
+    description: "Some agents run locally for development, others in the cloud for production workloads."
+    environment: "hybrid"
+
+    agent_placement:
+      local: ["triage", "coordinator"]
+      cloud: ["specialist", "data_processor"]
+
+    mcp_config:
+      default_base_url: "auto"  # Auto-detect based on agent placement
+      server_refs: ["common"]
+
+    local_config:
+      preset: "local_development"
+
+    cloud_config:
+      preset: "gcp_cloud_run"
+
+    resources:
+      memory: "varies"
+      cpu: "varies"
+      max_concurrent_agents: 15
+
+    network:
+      allow_external: true
+      cross_environment_communication: true
+      timeout_seconds: 60
+
+    environment_variables:
+      AX_ENVIRONMENT: "hybrid"
+      AX_LOG_LEVEL: "info"
+      AX_ENABLE_TELEMETRY: "true"
+
+    workspace:
+      base_dir: "varies"
+      persist: true
+      cleanup_on_exit: false
+
+    tags: ["hybrid", "flexible", "cost-optimized"]
+    cost_estimate: "varies based on cloud usage"
+
+# ============================================================================
+# Preset Selection Guide
+# ============================================================================
+#
+# Choose the right execution preset:
+#
+# local_development: Development and testing (free, easy debugging)
+# docker_local: Better isolation, similar to production (free)
+# gcp_cloud_run: Auto-scaling serverless (pay per use, $0.00002/req)
+# gcp_compute_engine: Dedicated VMs (higher baseline, more control)
+# aws_lambda: AWS serverless (pay per invocation)
+# aws_ecs_fargate: AWS containers (long-running workloads)
+# hybrid_dev_prod: Mix local and cloud (cost-optimized development)
+#
+# Considerations:
+# - Cost: Local/Docker < Serverless < Dedicated instances
+# - Scalability: Serverless > Dedicated > Local
+# - Control: Dedicated > Serverless > Local
+# - Setup complexity: Local < Serverless < Dedicated

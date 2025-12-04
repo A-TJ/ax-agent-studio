@@ -26,8 +26,38 @@ const escapeAttr = (value) => String(value)
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
 
+const escapeHtml = (value) => escapeAttr(value);
+
+// ============================================================================
+// THEME MANAGEMENT
+// ============================================================================
+function initializeTheme() {
+    // Check for saved theme preference or default to 'dark'
+    const savedTheme = localStorage.getItem('theme') || 'dark';
+    document.documentElement.setAttribute('data-theme', savedTheme);
+    updateThemeIcon(savedTheme);
+}
+
+function toggleTheme() {
+    const currentTheme = document.documentElement.getAttribute('data-theme');
+    const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+
+    document.documentElement.setAttribute('data-theme', newTheme);
+    localStorage.setItem('theme', newTheme);
+    updateThemeIcon(newTheme);
+}
+
+function updateThemeIcon(theme) {
+    const themeToggle = document.getElementById('theme-toggle');
+    if (themeToggle) {
+        themeToggle.textContent = theme === 'dark' ? '☀️' : '🌙';
+        themeToggle.title = theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode';
+    }
+}
+
 // Initialize dashboard
 document.addEventListener('DOMContentLoaded', async () => {
+    initializeTheme(); // Initialize theme first
     await loadFrameworks(); // Load framework registry first
     await loadSettings(); // Load settings (uses framework registry)
     await loadEnvironments();
@@ -76,6 +106,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 // Event Listeners
 function setupEventListeners() {
+    // Theme toggle
+    document.getElementById('theme-toggle').addEventListener('click', () => {
+        toggleTheme();
+    });
+
     document.getElementById('pause-all-btn').addEventListener('click', async () => {
         await pauseAllMonitors();
     });
@@ -887,12 +922,8 @@ function renderDeploymentGroups() {
             defaults.process_backlog !== undefined ? `Backlog: ${defaults.process_backlog ? 'resume' : 'fresh'}` : null
         ].filter(Boolean).join(' · ');
 
-        const agentsMarkup = group.agents.map(agent => {
-            const parts = [`@${agent.id}`];
-            if (agent.monitor) parts.push(agent.monitor);
-            if (agent.model) parts.push(agent.model);
-            return `<span class="agent-chip">${parts.join(' • ')}</span>`;
-        }).join('');
+        const agentsMarkup = (group.agents || []).map(renderAgentChip).join('');
+        const orchestrationMarkup = renderGroupOrchestration(group);
 
         const tagsMarkup = (group.tags || []).map(tag => `<span class="group-tag">${tag}</span>`).join('');
 
@@ -906,14 +937,14 @@ function renderDeploymentGroups() {
         <div class="group-card">
             <div class="group-header">
                 <div class="group-title">
-                    <strong>${group.name}</strong>
+                    <strong>${escapeHtml(group.name)}</strong>
                     <span class="group-status">${statusEmoji} ${group.status.toUpperCase()}</span>
                 </div>
                 <div class="group-actions">
                     ${actionButton}
                 </div>
             </div>
-            <p class="group-description">${group.description || 'No description provided.'}</p>
+            <p class="group-description">${escapeHtml(group.description || 'No description provided.')}</p>
             <div class="group-meta">
                 <span>Agents: ${group.total_agents}</span>
                 <span>${runningText}</span>
@@ -921,12 +952,216 @@ function renderDeploymentGroups() {
                 ${group.environment ? `<span>Env: ${group.environment}</span>` : ''}
             </div>
             ${tagsMarkup ? `<div class="group-tags">${tagsMarkup}</div>` : ''}
+            ${orchestrationMarkup}
             <div class="group-agents">
                 ${agentsMarkup}
             </div>
         </div>
         `;
     }).join('');
+}
+
+function renderGroupOrchestration(group) {
+    const sections = [];
+
+    const delegationCard = renderPatternCard(
+        'Delegation Pattern',
+        group.delegation_pattern_details,
+        group.delegation_pattern,
+        { icon: '🔀', showRoles: true, showRouting: true }
+    );
+    if (delegationCard) sections.push(delegationCard);
+
+    const collaborationCard = renderPatternCard(
+        'Collaboration Pattern',
+        group.collaboration_pattern_details,
+        group.collaboration_pattern,
+        { icon: '🤝', showRoles: true }
+    );
+    if (collaborationCard) sections.push(collaborationCard);
+
+    const mcpCard = renderMcpServerCard(group);
+    if (mcpCard) sections.push(mcpCard);
+
+    const presetCard = renderExecutionPresetCard(group);
+    if (presetCard) sections.push(presetCard);
+
+    if (!sections.length) {
+        return '';
+    }
+
+    return `<div class="group-orchestration-grid">
+        ${sections.join('')}
+    </div>`;
+}
+
+function renderPatternCard(title, details, fallbackId, options = {}) {
+    const patternId = (details && details.id) || fallbackId;
+    if (!patternId) {
+        return '';
+    }
+
+    const name = details?.name || patternId;
+    const description = details?.description || '';
+    const metaParts = [];
+
+    if (options.showRouting && details?.routing_strategy) {
+        metaParts.push(`Routing: ${escapeHtml(details.routing_strategy)}`);
+    }
+
+    if (details?.use_cases && Array.isArray(details.use_cases)) {
+        metaParts.push(`Use cases: ${escapeHtml(details.use_cases.join(', '))}`);
+    }
+
+    const metaMarkup = metaParts.length
+        ? `<div class="pattern-meta">${metaParts.join(' • ')}</div>`
+        : '';
+
+    const rolesMarkup = options.showRoles ? renderPatternRoles(details) : '';
+
+    return `
+        <div class="orchestration-card">
+            <div class="orchestration-card-title">${options.icon || '📋'} ${title}</div>
+            <div class="orchestration-card-name">${escapeHtml(name)}</div>
+            ${description ? `<p class="orchestration-card-description">${escapeHtml(description)}</p>` : ''}
+            ${metaMarkup}
+            ${rolesMarkup}
+        </div>
+    `;
+}
+
+function renderPatternRoles(details) {
+    if (!details || !details.roles) {
+        return '';
+    }
+
+    const roleEntries = Object.entries(details.roles)
+        .map(([roleName, config]) => {
+            if (!config || typeof config !== 'object') {
+                return '';
+            }
+
+            let summary = '';
+            if (Array.isArray(config.responsibilities) && config.responsibilities.length > 0) {
+                summary = config.responsibilities[0];
+            } else if (typeof config.description === 'string') {
+                summary = config.description;
+            } else if (typeof config.routing_rule === 'string') {
+                summary = `Rule: ${config.routing_rule}`;
+            }
+
+            return `
+                <div class="pattern-role">
+                    <span class="pattern-role-name">${escapeHtml(roleName)}</span>
+                    ${summary ? `<span class="pattern-role-desc">${escapeHtml(summary)}</span>` : ''}
+                </div>
+            `;
+        })
+        .filter(Boolean)
+        .join('');
+
+    if (!roleEntries) {
+        return '';
+    }
+
+    return `<div class="pattern-roles">${roleEntries}</div>`;
+}
+
+function renderMcpServerCard(group) {
+    const detailed = Array.isArray(group.mcp_server_details) ? group.mcp_server_details : [];
+    const fallback = Array.isArray(group.mcp_servers) ? group.mcp_servers : [];
+
+    if (!detailed.length && !fallback.length) {
+        return '';
+    }
+
+    const entries = (detailed.length ? detailed : fallback).map(server => {
+        if (typeof server === 'string') {
+            return `
+                <div class="mcp-server-entry">
+                    <div class="mcp-server-name">${escapeHtml(server)}</div>
+                </div>
+            `;
+        }
+
+        const includes = Array.isArray(server.includes)
+            ? server.includes.map(item => `<span class="mcp-server-pill">${escapeHtml(item)}</span>`).join('')
+            : '';
+
+        return `
+            <div class="mcp-server-entry">
+                <div class="mcp-server-name">
+                    ${escapeHtml(server.name || server.id || 'Server Group')}
+                    <span class="mcp-server-id">${escapeHtml(server.id || '')}</span>
+                </div>
+                ${server.description ? `<p class="mcp-server-description">${escapeHtml(server.description)}</p>` : ''}
+                ${includes ? `<div class="mcp-server-includes">${includes}</div>` : ''}
+            </div>
+        `;
+    }).join('');
+
+    return `
+        <div class="orchestration-card">
+            <div class="orchestration-card-title">🔌 MCP Servers</div>
+            ${entries}
+        </div>
+    `;
+}
+
+function renderExecutionPresetCard(group) {
+    const presetId = group.execution_preset;
+    if (!presetId) {
+        return '';
+    }
+
+    const details = group.execution_preset_details || {};
+    const name = details.name || presetId;
+    const description = details.description || '';
+
+    const stats = [];
+    if (details.environment || group.environment) {
+        stats.push(`Env: ${escapeHtml(details.environment || group.environment)}`);
+    }
+    if (details.resources?.memory) {
+        stats.push(`RAM ${escapeHtml(details.resources.memory)}`);
+    }
+    if (details.resources?.cpu) {
+        stats.push(`CPU ${escapeHtml(details.resources.cpu)}`);
+    }
+    if (details.resources?.max_concurrent_agents) {
+        stats.push(`Concurrency ${details.resources.max_concurrent_agents}`);
+    } else if (details.resources?.max_instances) {
+        stats.push(`Max ${details.resources.max_instances}`);
+    }
+    if (details.cost_estimate) {
+        stats.push(details.cost_estimate);
+    }
+
+    const statsMarkup = stats.length
+            ? `<div class="preset-stats">${stats.map(stat => `<span class="preset-stat">${escapeHtml(stat)}</span>`).join('')}</div>`
+            : '';
+
+    return `
+        <div class="orchestration-card">
+            <div class="orchestration-card-title">🚀 Execution Preset</div>
+            <div class="orchestration-card-name">${escapeHtml(name)}</div>
+            ${description ? `<p class="orchestration-card-description">${escapeHtml(description)}</p>` : ''}
+            ${statsMarkup}
+        </div>
+    `;
+}
+
+function renderAgentChip(agent) {
+    if (!agent || !agent.id) {
+        return '';
+    }
+
+    const parts = [`@${escapeHtml(agent.id)}`];
+    if (agent.role) parts.push(escapeHtml(agent.role));
+    if (agent.monitor) parts.push(escapeHtml(agent.monitor));
+    if (agent.model) parts.push(escapeHtml(agent.model));
+
+    return `<span class="agent-chip">${parts.join(' • ')}</span>`;
 }
 
 // Helper function to get capability badge color based on skill category
@@ -1012,6 +1247,58 @@ function renderCapabilities(coreCapabilities, additionalCapabilities) {
     </div>`;
 }
 
+// Helper function to render MCP servers section
+function renderMCPServers(mcpServers, monitorId) {
+    if (!mcpServers || mcpServers.length === 0) {
+        return '';
+    }
+
+    const mcpServerIcons = {
+        'ax-gcp': '☁️',
+        'ax-docker': '🐳',
+        'github': '🐙',
+        'filesystem': '📁',
+        'database': '🗄️',
+        'web': '🌐'
+    };
+
+    const serverItems = mcpServers.map(serverName => {
+        const icon = mcpServerIcons[serverName] || '🔧';
+        return `
+            <div class="mcp-server-item">
+                <span class="mcp-server-icon">${icon}</span>
+                <span class="mcp-server-name">${serverName}</span>
+            </div>
+        `;
+    }).join('');
+
+    return `
+        <div class="mcp-servers-section">
+            <div class="mcp-servers-header" onclick="toggleMCPServers('${monitorId}')">
+                <div class="mcp-servers-title">
+                    🔌 MCP Servers
+                    <span class="mcp-servers-count">${mcpServers.length}</span>
+                </div>
+                <span class="mcp-servers-toggle" id="mcp-toggle-${monitorId}">▼</span>
+            </div>
+            <div class="mcp-servers-list" id="mcp-list-${monitorId}">
+                ${serverItems}
+            </div>
+        </div>
+    `;
+}
+
+// Toggle MCP servers visibility
+function toggleMCPServers(monitorId) {
+    const list = document.getElementById(`mcp-list-${monitorId}`);
+    const toggle = document.getElementById(`mcp-toggle-${monitorId}`);
+
+    if (list && toggle) {
+        list.classList.toggle('expanded');
+        toggle.classList.toggle('expanded');
+    }
+}
+
 function renderMonitors() {
     const container = document.getElementById('monitors-list');
 
@@ -1054,6 +1341,9 @@ function renderMonitors() {
         // Render capability badges
         const capabilitiesHTML = renderCapabilities(monitor.core_capabilities, monitor.additional_capabilities);
 
+        // Render MCP servers section
+        const mcpServersHTML = renderMCPServers(monitor.mcp_servers, monitor.id);
+
         return `
         <div class="monitor-card">
             <div class="monitor-top">
@@ -1061,8 +1351,9 @@ function renderMonitors() {
                     ${getMonitorEmoji(monitor.monitor_type)} ${monitor.agent_name}
                 </div>
                 <div class="monitor-controls">
-                    <div class="monitor-status ${statusClass}">
-                        ${isRunning ? '🟢' : '⏸️'} ${statusLabel}
+                    <div class="status-indicator ${statusClass}">
+                        <span class="status-dot"></span>
+                        ${statusLabel}
                     </div>
                     <div class="monitor-actions">
                         ${testControl}
@@ -1077,13 +1368,13 @@ function renderMonitors() {
                     Type: ${getFriendlyMonitorTypeName(monitor.monitor_type)} |
                     ${shouldShowProvider(monitor.monitor_type) && monitor.provider ? `Provider: ${providerName} | ` : ''}
                     ${monitor.model ? `Model: ${modelName}` : ''}
-                    ${monitor.uptime_seconds && isRunning ? ` | Uptime: ${formatUptime(monitor.uptime_seconds)}` : ''}
                     <br>
                     ${monitor.environment ? `Environment: ${monitor.environment} | ` : ''}
-                    ${monitor.mcp_servers && monitor.mcp_servers.length > 0 ? `Tools: ${monitor.mcp_servers.join(', ')} | ` : ''}
                     ${promptInfo}${deploymentInfo}
+                    ${monitor.uptime_seconds && isRunning ? `<br><span class="agent-uptime">⏱ Uptime: ${formatUptime(monitor.uptime_seconds)}</span>` : ''}
                 </div>
                 ${capabilitiesHTML}
+                ${mcpServersHTML}
             </div>
         </div>
     `;

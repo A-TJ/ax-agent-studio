@@ -1,0 +1,321 @@
+# Task Delegation Patterns
+#
+# This file defines reusable task delegation workflows for agent teams.
+# Delegation patterns specify how agents route work to each other, enabling
+# structured collaboration without hardcoding logic into individual agents.
+#
+# Usage:
+#   Reference a pattern in deployment_groups.yaml:
+#   delegation_pattern: "round_robin"
+#
+# Each pattern defines:
+#   - routing_strategy: How tasks are distributed
+#   - roles: Agent roles with delegation rules
+#   - handoff_protocol: Information passed during delegation
+#   - example_mentions: Sample @mention patterns
+
+delegation_patterns:
+  # ============================================================================
+  # ROUND ROBIN - Even Distribution
+  # ============================================================================
+  round_robin:
+    name: "Round Robin Distribution"
+    description: "Distribute tasks evenly across all agents in rotation. Each agent gets equal workload."
+    routing_strategy: "sequential"
+
+    roles:
+      coordinator:
+        can_delegate_to: ["worker"]
+        routing_rule: "next_available"
+        description: "Distributes tasks sequentially to workers"
+
+      worker:
+        can_delegate_to: []
+        receives_from: ["coordinator"]
+        description: "Processes assigned tasks"
+
+    handoff_protocol:
+      required_fields: ["task_description", "priority", "deadline"]
+      optional_fields: ["context", "dependencies"]
+
+    example_mentions:
+      - "@coordinator Please distribute these 5 tasks to the team"
+      - "@worker_1 Here's your next task: [task details]"
+
+    tags: ["load-balancing", "simple", "parallel"]
+
+  # ============================================================================
+  # WATERFALL - Sequential Handoff
+  # ============================================================================
+  waterfall:
+    name: "Waterfall Sequential Handoff"
+    description: "Linear progression through stages. Each agent completes their phase before passing to next agent."
+    routing_strategy: "sequential_required"
+
+    roles:
+      manager:
+        can_delegate_to: ["developer"]
+        routing_rule: "initial_assignment"
+        description: "Defines requirements and assigns to developer"
+
+      developer:
+        can_delegate_to: ["qa"]
+        routing_rule: "completion_handoff"
+        receives_from: ["manager"]
+        description: "Implements features, passes completed work to QA"
+
+      qa:
+        can_delegate_to: ["manager"]  # Can send back for fixes
+        receives_from: ["developer"]
+        description: "Tests implementation, approves or returns for fixes"
+
+    handoff_protocol:
+      required_fields: ["task_description", "completion_status", "deliverables"]
+      optional_fields: ["notes", "issues_found", "recommendations"]
+
+    example_mentions:
+      - "@manager: Define the requirements"
+      - "@developer: Implement feature XYZ based on requirements"
+      - "@qa: Review and test the completed implementation"
+      - "@manager: QA found issues, needs revision"
+
+    tags: ["sequential", "phased", "traditional"]
+
+  # ============================================================================
+  # PRIORITY ROUTING - Urgency-Based
+  # ============================================================================
+  priority_routing:
+    name: "Priority-Based Task Routing"
+    description: "Route tasks based on urgency and complexity. High-priority or complex tasks go to specialized agents."
+    routing_strategy: "rule_based"
+
+    roles:
+      triager:
+        can_delegate_to: ["specialist", "generalist"]
+        routing_rule: "priority_assessment"
+        description: "Analyzes task priority/complexity and routes accordingly"
+
+      specialist:
+        can_delegate_to: ["triager"]  # Can escalate or complete
+        receives_from: ["triager"]
+        priority_threshold: "high"
+        description: "Handles high-priority or complex tasks"
+
+      generalist:
+        can_delegate_to: ["triager"]  # Can escalate
+        receives_from: ["triager"]
+        priority_threshold: "low_to_medium"
+        description: "Handles standard tasks"
+
+    routing_rules:
+      high_priority:
+        condition: "priority >= 8 OR complexity >= 7"
+        route_to: "specialist"
+
+      medium_priority:
+        condition: "priority >= 5 AND complexity < 7"
+        route_to: "generalist"
+
+      low_priority:
+        condition: "priority < 5"
+        route_to: "generalist"
+
+    handoff_protocol:
+      required_fields: ["task_description", "priority", "complexity", "category"]
+      optional_fields: ["deadline", "customer_info", "related_tickets"]
+
+    example_mentions:
+      - "@triager: Incoming task - Priority: 9, Complexity: 8"
+      - "@specialist: High-priority issue requiring expert attention"
+      - "@generalist: Standard request - Priority: 4"
+
+    tags: ["priority", "adaptive", "intelligent-routing"]
+
+  # ============================================================================
+  # SPECIALIST ROUTING - Expertise-Based
+  # ============================================================================
+  specialist_routing:
+    name: "Specialist Expertise Routing"
+    description: "Route tasks based on required expertise. Tasks are matched to agents with relevant skills."
+    routing_strategy: "expertise_matching"
+
+    roles:
+      dispatcher:
+        can_delegate_to: ["frontend_specialist", "backend_specialist", "devops_specialist"]
+        routing_rule: "skill_match"
+        description: "Analyzes task requirements and routes to appropriate specialist"
+
+      frontend_specialist:
+        can_delegate_to: ["dispatcher"]
+        receives_from: ["dispatcher"]
+        expertise: ["react", "vue", "ui", "ux", "css"]
+        description: "Handles frontend/UI tasks"
+
+      backend_specialist:
+        can_delegate_to: ["dispatcher"]
+        receives_from: ["dispatcher"]
+        expertise: ["api", "database", "server", "auth", "backend"]
+        description: "Handles backend/API tasks"
+
+      devops_specialist:
+        can_delegate_to: ["dispatcher"]
+        receives_from: ["dispatcher"]
+        expertise: ["deployment", "ci/cd", "docker", "k8s", "infrastructure"]
+        description: "Handles deployment and infrastructure tasks"
+
+    routing_rules:
+      frontend_task:
+        keywords: ["ui", "component", "css", "design", "interface"]
+        route_to: "frontend_specialist"
+
+      backend_task:
+        keywords: ["api", "database", "endpoint", "auth", "server"]
+        route_to: "backend_specialist"
+
+      devops_task:
+        keywords: ["deploy", "ci", "cd", "docker", "k8s", "infrastructure"]
+        route_to: "devops_specialist"
+
+    handoff_protocol:
+      required_fields: ["task_description", "required_skills", "category"]
+      optional_fields: ["deadline", "dependencies", "related_tasks"]
+
+    example_mentions:
+      - "@dispatcher: New task - Category: Frontend, Skills: React + CSS"
+      - "@frontend_specialist: Build responsive navigation component"
+      - "@backend_specialist: Implement user authentication API"
+
+    tags: ["expertise", "skills-based", "specialization"]
+
+  # ============================================================================
+  # SCRUM - Sprint-Based Collaboration
+  # ============================================================================
+  scrum:
+    name: "Scrum Sprint Collaboration"
+    description: "Agile scrum pattern with sprint planning, daily standups, and retrospectives."
+    routing_strategy: "sprint_based"
+
+    roles:
+      scrum_master:
+        can_delegate_to: ["developer", "qa", "designer"]
+        routing_rule: "sprint_assignment"
+        description: "Facilitates sprint planning, removes blockers, coordinates team"
+
+      developer:
+        can_delegate_to: ["scrum_master", "qa"]
+        receives_from: ["scrum_master"]
+        description: "Implements sprint backlog items, participates in standups"
+
+      qa:
+        can_delegate_to: ["scrum_master", "developer"]
+        receives_from: ["developer", "scrum_master"]
+        description: "Tests sprint deliverables, reports bugs"
+
+      designer:
+        can_delegate_to: ["scrum_master", "developer"]
+        receives_from: ["scrum_master"]
+        description: "Creates designs for sprint items"
+
+    ceremonies:
+      sprint_planning:
+        frequency: "start_of_sprint"
+        participants: ["scrum_master", "developer", "qa", "designer"]
+        purpose: "Plan sprint backlog and assign tasks"
+
+      daily_standup:
+        frequency: "daily"
+        participants: ["scrum_master", "developer", "qa", "designer"]
+        purpose: "Share progress, blockers, and plans"
+
+      sprint_review:
+        frequency: "end_of_sprint"
+        participants: ["scrum_master", "developer", "qa", "designer"]
+        purpose: "Demo completed work"
+
+      retrospective:
+        frequency: "end_of_sprint"
+        participants: ["scrum_master", "developer", "qa", "designer"]
+        purpose: "Reflect on process improvements"
+
+    handoff_protocol:
+      required_fields: ["story_id", "task_description", "acceptance_criteria", "sprint_number"]
+      optional_fields: ["story_points", "blockers", "related_stories"]
+
+    example_mentions:
+      - "@scrum_master: Sprint planning - assign story #123 to @developer"
+      - "@developer: Daily standup - completed story #122, working on #123, blocked by API issue"
+      - "@qa: Story #123 ready for testing"
+
+    tags: ["agile", "sprint", "collaborative", "structured"]
+
+  # ============================================================================
+  # ESCALATION LADDER - Support Hierarchy
+  # ============================================================================
+  escalation_ladder:
+    name: "Support Escalation Hierarchy"
+    description: "Tiered support escalation. Issues are escalated up levels based on complexity."
+    routing_strategy: "hierarchical_escalation"
+
+    roles:
+      tier1:
+        can_delegate_to: ["tier2"]
+        escalation_trigger: "cannot_resolve OR complexity > threshold"
+        description: "First-line support, handles common issues"
+
+      tier2:
+        can_delegate_to: ["tier3", "tier1"]  # Can escalate up or resolve and return
+        receives_from: ["tier1"]
+        escalation_trigger: "requires_engineering OR critical_issue"
+        description: "Advanced support, handles complex issues"
+
+      tier3:
+        can_delegate_to: ["engineering", "tier2"]
+        receives_from: ["tier2"]
+        escalation_trigger: "requires_code_fix OR system_issue"
+        description: "Expert support, handles escalated issues"
+
+      engineering:
+        can_delegate_to: ["tier3"]  # Returns resolved issues
+        receives_from: ["tier3"]
+        description: "Engineering team, fixes bugs and system issues"
+
+    escalation_criteria:
+      to_tier2:
+        - "Issue not in tier1 knowledge base"
+        - "Customer is premium/enterprise"
+        - "Issue impacts multiple users"
+
+      to_tier3:
+        - "Issue requires system access"
+        - "Potential security issue"
+        - "Critical production bug"
+
+      to_engineering:
+        - "Confirmed code bug"
+        - "System architecture change needed"
+        - "Performance optimization required"
+
+    handoff_protocol:
+      required_fields: ["ticket_id", "issue_description", "attempted_solutions", "escalation_reason"]
+      optional_fields: ["customer_tier", "business_impact", "logs"]
+
+    example_mentions:
+      - "@tier1: Customer reports login issue"
+      - "@tier2: Escalated - login issue persists after tier1 troubleshooting"
+      - "@tier3: Critical - multiple users affected, possible auth service issue"
+      - "@engineering: Confirmed bug in auth service, needs code fix"
+
+    tags: ["support", "escalation", "hierarchical", "customer-service"]
+
+# ============================================================================
+# Pattern Selection Guide
+# ============================================================================
+#
+# Choose the right pattern for your team:
+#
+# round_robin: Simple, equal distribution (good for homogeneous tasks)
+# waterfall: Sequential phases (good for traditional projects)
+# priority_routing: Urgency-based (good for support/tickets)
+# specialist_routing: Skill-matching (good for technical teams)
+# scrum: Sprint-based agile (good for product development)
+# escalation_ladder: Tiered support (good for customer service)

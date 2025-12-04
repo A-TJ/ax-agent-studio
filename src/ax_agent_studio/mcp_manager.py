@@ -1,21 +1,40 @@
 #!/usr/bin/env python3
 """
 MCP Multi-Server Manager
-Manages connections to multiple MCP servers and provides unified tool access
+Manages connections to multiple MCP servers and provides unified tool access.
+
+Enhanced with liveness probes, automatic reconnection, and retry policies.
 """
 
+from __future__ import annotations
+
+import asyncio
 import json
 import logging
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, suppress
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from ax_agent_studio.mcp_heartbeat import HeartbeatManager
+from ax_agent_studio.monitoring.liveness import LivenessRegistry
+from ax_agent_studio.monitoring.metrics import log_metric
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ServerConnectionState:
+    name: str
+    config: dict[str, Any]
+    session: ClientSession | None = None
+    heartbeat_task: asyncio.Task | None = None
+    reconnect_attempts: int = 0
+    last_error: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class MCPServerManager:
@@ -27,6 +46,9 @@ class MCPServerManager:
         base_dir: Path | None = None,
         config_path: Path | None = None,
         heartbeat_interval: int = 240,
+        operation_timeout: int = 30,
+        max_operation_retries: int = 3,
+        reconnect_backoff: float = 2.0,
     ):
         """
         Initialize MCP Server Manager.
@@ -46,12 +68,27 @@ class MCPServerManager:
 
         # Multi-server state
         self.sessions: dict[str, ClientSession] = {}
-        self.exit_stack = None
-        self.config = None
+        self.server_states: dict[str, ServerConnectionState] = {}
+        self.exit_stack: AsyncExitStack | None = None
+        self.config: dict[str, Any] | None = None
 
-        # Heartbeat manager for keeping connections alive
+        # Policy configuration
+        self.operation_timeout = operation_timeout
+        self.max_operation_retries = max_operation_retries
+        self.reconnect_backoff = reconnect_backoff
+
+        # Health tracking
         self.heartbeat_manager = HeartbeatManager(interval=heartbeat_interval)
-        logger.info(f"MCPServerManager initialized with heartbeat interval: {heartbeat_interval}s")
+        self.liveness = LivenessRegistry(
+            domain="mcp",
+            on_state_change=lambda name, payload: log_metric("mcp_liveness", **payload),
+        )
+        logger.info(
+            "MCPServerManager initialized (heartbeat=%ss timeout=%ss retries=%s)",
+            heartbeat_interval,
+            operation_timeout,
+            max_operation_retries,
+        )
 
     async def __aenter__(self):
         """Async context manager entry - connect to all servers"""
@@ -88,8 +125,55 @@ class MCPServerManager:
 
         return StdioServerParameters(command=command, args=args, env=env)
 
+    async def _maybe_start_heartbeat(
+        self,
+        server_name: str,
+        session: ClientSession,
+        server_config: dict[str, Any],
+    ) -> None:
+        """Start heartbeat loop for remote servers."""
+        requires_heartbeat = server_name.startswith("ax-") or "mcp-remote" in str(
+            server_config.get("args", [])
+        )
+        if not requires_heartbeat:
+            logger.debug("Skipping heartbeat for %s (local server)", server_name)
+            return
+
+        await self.heartbeat_manager.start(session, name=f"{self.agent_name}/{server_name}")
+        logger.info("Started heartbeat for remote server: %s", server_name)
+
+    async def _connect_single_server(self, state: ServerConnectionState) -> bool:
+        """Create a single server session and start monitoring tasks."""
+        server_name = state.name
+        server_config = state.config
+
+        try:
+            server_params = self._build_server_params(server_name, server_config)
+            read, write = await self.exit_stack.enter_async_context(stdio_client(server_params))
+            session = await self.exit_stack.enter_async_context(ClientSession(read, write))
+            await asyncio.wait_for(session.initialize(), timeout=self.operation_timeout)
+
+            self.sessions[server_name] = session
+            state.session = session
+            state.last_error = None
+            state.reconnect_attempts = 0
+
+            await self._maybe_start_heartbeat(server_name, session, server_config)
+            await self.liveness.beat(server_name)
+
+            tools_response = await asyncio.wait_for(session.list_tools(), timeout=self.operation_timeout)
+            tool_count = len(tools_response.tools) if hasattr(tools_response, "tools") else 0
+            state.metadata["tool_count"] = tool_count
+            log_metric("mcp_connected", server=server_name, tool_count=tool_count)
+            return True
+        except Exception as exc:
+            state.last_error = str(exc)
+            log_metric("mcp_connection_failed", server=server_name, error=state.last_error)
+            logger.error("Failed to connect to %s: %s", server_name, exc)
+            return False
+
     async def connect_all(self):
-        """Connect to all MCP servers defined in config"""
+        """Connect to all MCP servers defined in config."""
         if self.config is None:
             self.load_config()
 
@@ -101,49 +185,19 @@ class MCPServerManager:
         print(f"\n Connecting to {len(mcp_servers)} MCP server(s)...")
 
         for server_name, server_config in mcp_servers.items():
-            try:
-                print(f"   • {server_name}...", end=" ")
+            state = ServerConnectionState(
+                name=server_name,
+                config=server_config,
+            )
+            self.server_states[server_name] = state
+            connected = await self._connect_single_server(state)
+            if connected:
+                print(f"   • {server_name} (connected)")
+            else:
+                print(f"   • {server_name} (failed, will retry on demand)")
 
-                # Build server parameters
-                server_params = self._build_server_params(server_name, server_config)
-
-                # Connect to server
-                read, write = await self.exit_stack.enter_async_context(stdio_client(server_params))
-
-                # Create session
-                session = await self.exit_stack.enter_async_context(ClientSession(read, write))
-
-                # Initialize session
-                await session.initialize()
-
-                # Store session
-                self.sessions[server_name] = session
-
-                # Start heartbeat ONLY for remote aX servers (not local filesystem/memory/etc)
-                # Local servers don't have Cloud Run timeouts, only remote aX server needs pings
-                if server_name.startswith("ax-") or "mcp-remote" in str(
-                    server_config.get("args", [])
-                ):
-                    await self.heartbeat_manager.start(
-                        session, name=f"{self.agent_name}/{server_name}"
-                    )
-                    logger.info(f"Started heartbeat for remote server: {server_name}")
-                else:
-                    logger.debug(f"Skipping heartbeat for local server: {server_name}")
-
-                # Get available tools
-                tools_response = await session.list_tools()
-                tool_count = len(tools_response.tools) if hasattr(tools_response, "tools") else 0
-
-                print(f" ({tool_count} tools)")
-                logger.info(f"Connected to {server_name} with {tool_count} tools")
-
-            except Exception as e:
-                print("")
-                logger.error(f"Failed to connect to {server_name}: {e}")
-                # Continue with other servers even if one fails
-
-        print(f" Connected to {len(self.sessions)}/{len(mcp_servers)} servers\n")
+        success_count = sum(1 for state in self.server_states.values() if state.session)
+        print(f" Connected to {success_count}/{len(mcp_servers)} servers\n")
 
     async def disconnect_all(self):
         """Disconnect from all MCP servers and stop heartbeats"""
@@ -154,6 +208,7 @@ class MCPServerManager:
         if self.exit_stack:
             await self.exit_stack.__aexit__(None, None, None)
             self.sessions.clear()
+            self.server_states.clear()
 
     def get_session(self, server_name: str) -> ClientSession | None:
         """Get a specific MCP session by server name"""
@@ -171,28 +226,114 @@ class MCPServerManager:
 
         raise RuntimeError("No MCP sessions available")
 
+    async def _ensure_session(self, server_name: str) -> ClientSession:
+        session = self.sessions.get(server_name)
+        if session:
+            return session
+
+        state = self.server_states.get(server_name)
+        if not state:
+            raise ValueError(f"Unknown server '{server_name}'")
+
+        reconnected = await self._attempt_reconnect(state)
+        if not reconnected or not state.session:
+            raise RuntimeError(f"Unable to reconnect to server '{server_name}'")
+        return state.session
+
+    async def _attempt_reconnect(self, state: ServerConnectionState) -> bool:
+        """Attempt to reconnect to a server with exponential backoff."""
+        max_attempts = self.max_operation_retries
+        for attempt in range(1, max_attempts + 1):
+            backoff = self.reconnect_backoff * (2 ** (attempt - 1))
+            logger.warning(
+                "Reconnecting to %s (attempt %s/%s, backoff %.1fs)",
+                state.name,
+                attempt,
+                max_attempts,
+                backoff,
+            )
+            await asyncio.sleep(backoff)
+            state.reconnect_attempts = attempt
+            success = await self._connect_single_server(state)
+            if success:
+                log_metric("mcp_reconnected", server=state.name, attempt=attempt)
+                return True
+
+        log_metric("mcp_reconnect_failed", server=state.name, attempts=max_attempts)
+        return False
+
     async def list_all_tools(self) -> dict[str, list[Any]]:
-        """List all available tools from all servers"""
-        all_tools = {}
+        """List all available tools from all servers."""
+        results: dict[str, list[Any]] = {}
 
-        for server_name, session in self.sessions.items():
+        async def _list(session: ClientSession):
+            response = await session.list_tools()
+            return response.tools if hasattr(response, "tools") else []
+
+        for server_name in self.server_states:
             try:
-                response = await session.list_tools()
-                tools = response.tools if hasattr(response, "tools") else []
-                all_tools[server_name] = tools
-            except Exception as e:
-                logger.error(f"Failed to list tools for {server_name}: {e}")
-                all_tools[server_name] = []
-
-        return all_tools
+                tools = await self._execute_with_retry(server_name, _list, "list_tools")
+                results[server_name] = tools
+            except Exception as exc:
+                logger.error("Failed to list tools for %s: %s", server_name, exc)
+                results[server_name] = []
+        return results
 
     async def call_tool(self, server_name: str, tool_name: str, arguments: dict) -> Any:
-        """Call a tool on a specific server"""
-        session = self.get_session(server_name)
-        if not session:
-            raise ValueError(f"Server '{server_name}' not connected")
+        """Call a tool on a specific server with timeout/retry logic."""
 
-        return await session.call_tool(tool_name, arguments)
+        async def _call(session: ClientSession):
+            return await session.call_tool(tool_name, arguments)
+
+        return await self._execute_with_retry(server_name, _call, f"call_tool:{tool_name}")
+
+    async def _execute_with_retry(
+        self,
+        server_name: str,
+        operation: Callable[[ClientSession], Awaitable[Any]],
+        opname: str,
+    ) -> Any:
+        last_error: Exception | None = None
+
+        for attempt in range(1, self.max_operation_retries + 1):
+            try:
+                session = await self._ensure_session(server_name)
+                result = await asyncio.wait_for(operation(session), timeout=self.operation_timeout)
+                await self.liveness.beat(server_name)
+                if attempt > 1:
+                    log_metric("mcp_retry_success", server=server_name, op=opname, attempt=attempt)
+                return result
+            except asyncio.TimeoutError as exc:
+                last_error = exc
+                log_metric(
+                    "mcp_operation_timeout",
+                    server=server_name,
+                    op=opname,
+                    attempt=attempt,
+                )
+                await self.liveness.miss(server_name)
+            except Exception as exc:
+                last_error = exc
+                log_metric(
+                    "mcp_operation_failure",
+                    server=server_name,
+                    op=opname,
+                    attempt=attempt,
+                    error=str(exc),
+                )
+                await self.liveness.miss(server_name)
+                # Force reconnect on next attempt
+                with suppress(KeyError):
+                    session = self.sessions.pop(server_name)
+                    if session:
+                        await session.close()
+            await asyncio.sleep(self.reconnect_backoff * attempt)
+
+        await self.liveness.mark_dead(server_name)
+        raise RuntimeError(
+            f"Operation '{opname}' failed for server '{server_name}' after "
+            f"{self.max_operation_retries} attempts"
+        ) from last_error
 
     def print_summary(self):
         """Print a summary of connected servers and available tools"""

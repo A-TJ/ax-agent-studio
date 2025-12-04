@@ -832,6 +832,14 @@ class ProcessManager:
                     "defaults": group.defaults,
                     "tags": group.tags,
                     "environment": group.environment,
+                    "delegation_pattern": group.delegation_pattern,
+                    "delegation_pattern_details": group.delegation_pattern_details,
+                    "collaboration_pattern": group.collaboration_pattern,
+                    "collaboration_pattern_details": group.collaboration_pattern_details,
+                    "mcp_servers": group.mcp_servers,
+                    "mcp_server_details": group.mcp_server_details,
+                    "execution_preset": group.execution_preset,
+                    "execution_preset_details": group.execution_preset_details,
                     "total_agents": len(group.agents),
                     "running_count": len(running_ids),
                     "monitor_ids": monitor_ids,
@@ -841,6 +849,7 @@ class ProcessManager:
                     "agents": [
                         {
                             "id": agent.id,
+                            "role": agent.role,
                             "monitor": agent.monitor,
                             "provider": agent.provider,
                             "model": agent.model,
